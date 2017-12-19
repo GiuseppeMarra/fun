@@ -45,6 +45,8 @@ class FunClassifier():
         #Cost Function
         self.loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.logits,
                                                        labels=labels))
+        #self.loss += 0.001*tf.add_n(tf.get_collection('losses'), name='total_loss')
+
 
         #Evaluation
         correct_prediction = tf.equal(tf.argmax(self.logits, 1), tf.argmax(labels, 1))

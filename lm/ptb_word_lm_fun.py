@@ -69,6 +69,7 @@ import util
 from fun import FunRNNCell
 import sys
 import select
+import random
 
 
 from tensorflow.python.client import device_lib
@@ -281,68 +282,20 @@ class PTBModel(object):
     return self._train_op
 
 
-class SmallConfig(object):
-  """Small config."""
-  init_scale = 0.04
-  learning_rate = 0.001
-  max_grad_norm = 10
-  num_layers = 2
-  num_steps = 35
-  hidden_size = 300
-  max_epoch = 6
-  max_max_epoch = 70
-  keep_prob = 0.5
-  lr_decay = 1.
-  batch_size = 64
-  vocab_size = 10000
-
-
-class MediumConfig(object):
-  """Medium config."""
-  init_scale = 0.05
-  learning_rate = 1.
-  max_grad_norm = 5
-  num_layers = 2
-  num_steps = 35
-  hidden_size = 650
-  max_epoch = 6
-  max_max_epoch = 39
-  keep_prob = 0.5
-  lr_decay = 0.8
-  batch_size = 20
-  vocab_size = 10000
-
-
-class LargeConfig(object):
-  """Large config."""
-  init_scale = 0.04
-  learning_rate = 1.0
-  max_grad_norm = 10
-  num_layers = 2
-  num_steps = 35
-  hidden_size = 1500
-  max_epoch = 14
-  max_max_epoch = 55
-  keep_prob = 0.35
-  lr_decay = 1 / 1.15
-  batch_size = 20
-  vocab_size = 10000
-
-
-class TestConfig(object):
-  """Tiny config, for testing."""
-  init_scale = 0.1
-  learning_rate = 1.0
-  max_grad_norm = 1
-  num_layers = 1
-  num_steps = 2
-  hidden_size = 2
-  max_epoch = 1
-  max_max_epoch = 1
-  keep_prob = 1.0
-  lr_decay = 0.5
-  batch_size = 20
-  vocab_size = 10000
+class Config(object):
+  def __init__(self):
+    self.init_scale = 0.05
+    self.learning_rate = 0.001
+    self.max_grad_norm = 10
+    self.num_layers = 2
+    self.num_steps = 35
+    self.hidden_size = 300
+    self.max_epoch = 6
+    self.max_max_epoch = 50
+    self.keep_prob = 0.5
+    self.lr_decay = 1.
+    self.batch_size = 64
+    self.vocab_size = 10000
 
 
 def run_epoch(session, model, eval_op=None, verbose=False):
@@ -380,31 +333,14 @@ def run_epoch(session, model, eval_op=None, verbose=False):
   return np.exp(costs / iters)
 
 
-def get_config():
-  """Get model config."""
-  config = None
-  if FLAGS.model == "small":
-    config = SmallConfig()
-  elif FLAGS.model == "medium":
-    config = MediumConfig()
-  elif FLAGS.model == "large":
-    config = LargeConfig()
-  elif FLAGS.model == "test":
-    config = TestConfig()
-  else:
-    raise ValueError("Invalid model: %s", FLAGS.model)
-  return config
 
-
-def main(_):
+def train(config):
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to PTB data directory")
 
   raw_data = reader.ptb_raw_data(FLAGS.data_path)
   train_data, valid_data, test_data, _ = raw_data
 
-  config = get_config()
-  eval_config = get_config()
 
   initializer = tf.random_uniform_initializer(-config.init_scale,
                                               config.init_scale)
@@ -424,9 +360,9 @@ def main(_):
 
   with tf.name_scope("Test"):
     test_input = PTBInput(
-        config=eval_config, data=test_data, name="TestInput")
+        config=config, data=test_data, name="TestInput")
     with tf.variable_scope("Model", reuse=True, initializer=initializer):
-      mtest = PTBModel(is_training=False, config=eval_config,
+      mtest = PTBModel(is_training=False, config=config,
                        input_=test_input)
 
 
@@ -456,6 +392,47 @@ def main(_):
       print("Saving model to %s." % FLAGS.save_path)
       sv.saver.save(session, FLAGS.save_path, global_step=sv.global_step)
 
+    return train_perplexity, valid_perplexity, test_perplexity
+
+def config_generator(config, dict):
+
+  def _recursive_call(items, attr_id):
+    attr_name = items[attr_id][0]
+    attr_values = items[attr_id][1]
+    for attr_value in attr_values:
+      setattr(config,attr_name, attr_value)
+      if attr_id==(len(items)-1): # base case
+          yield config
+      else:
+        for i in _recursive_call(items, attr_id+1):
+          yield i
+
+
+  items = dict.items()
+  for i in _recursive_call(items, 0):
+    yield i
+
 
 if __name__ == "__main__":
-  tf.app.run()
+  # tf.app.run()
+
+  with open("results.csv", "w") as f:
+
+    dict = {
+      "num_layers" : [1, 2],
+      "hidden_size" : [200, 300, 600, 1000],
+      "keep_prob" : [0.5, 0.8],
+      "batch_size" : [20, 64],
+    }
+    config = Config()
+    f.write(",".join([str(attr[0]) for attr in vars(config).items()])) # csv header
+    f.write(",train_acc,valid_acc,test_acc")
+    f.write("\n")
+
+    for config in config_generator(config, dict):
+      tr, vl, ts = train(config)
+      f.write(",".join([str(attr[1]) for attr in vars(config).items()]))
+      f.write(",%f,%f,%f" % (tr, vl, ts))
+      f.write("\n")
+
+

@@ -401,7 +401,7 @@ def train(config, save_path):
 
       if valid_perplexity <min_val_perplexity:
         min_val_perplexity = valid_perplexity
-        saver.save(session, save_path=save_path)
+        saver.save(session, save_path=os.path.join(save_path, "model.ckpt"))
         print("Saving best validation model")
         f.write("Saving best validation model\n")
 

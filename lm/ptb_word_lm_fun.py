@@ -70,6 +70,7 @@ from fun import FunRNNCell
 import sys
 import select
 import random
+import os
 
 
 from tensorflow.python.client import device_lib
@@ -198,7 +199,7 @@ class PTBModel(object):
     # different than reported in the paper.
     def make_cell():
       cell = FunRNNCell(
-          num_units = config.hidden_size, k = 5,  lambda_alphas = 0.,is_training = is_training,
+          num_units = config.hidden_size, k = config.k,  lambda_alphas = config.lambda_alphas, is_training = is_training,
           reuse=not is_training)
       if is_training and config.keep_prob < 1:
         cell = tf.contrib.rnn.DropoutWrapper(
@@ -291,11 +292,14 @@ class Config(object):
     self.num_steps = 35
     self.hidden_size = 300
     self.max_epoch = 6
-    self.max_max_epoch = 50
+    self.max_max_epoch = 2
     self.keep_prob = 0.5
     self.lr_decay = 1.
     self.batch_size = 64
     self.vocab_size = 10000
+
+    self.k = 10
+    self.lambda_alphas = 0.
 
 
 def run_epoch(session, model, eval_op=None, verbose=False):
@@ -334,7 +338,9 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 
 
 
-def train(config):
+def train(config, save_path):
+  os.mkdir(save_path)
+  tf.reset_default_graph()
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to PTB data directory")
 
@@ -366,8 +372,10 @@ def train(config):
                        input_=test_input)
 
 
-  sv = tf.train.Supervisor(logdir=FLAGS.save_path)
-  with sv.managed_session() as session:
+  min_val_perplexity = None
+  saver = tf.train.Saver()
+  f = open(os.path.join(save_path, "log.txt"), "w")
+  with tf.train.MonitoredSession() as session:
     for i in range(config.max_max_epoch):
 
       # lr_decay = config.lr_decay ** max(i + 1 - config.max_epoch, 0.0)
@@ -376,21 +384,32 @@ def train(config):
       t_op  = m._train_op_adam #if i < 25 else m._train_op_gd
 
       print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
+      f.write("Epoch: %d Learning rate: %.3f \n" % (i + 1, session.run(m.lr)))
       train_perplexity = run_epoch(session, m, eval_op=t_op,
                                    verbose=True)
       print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
+      f.write("Epoch: %d Train Perplexity: %.3f \n" % (i + 1, train_perplexity))
       valid_perplexity = run_epoch(session, mvalid)
+      if min_val_perplexity is None:
+        min_val_perplexity = valid_perplexity
+      if min_val_perplexity > valid_perplexity:
+        min_val_perplexity = valid_perplexity
+        saver.save(session, save_path=save_path)
+
       print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+      f.write("Epoch: %d Valid Perplexity: %.3f \n" % (i + 1, valid_perplexity))
+      f.flush()
+      os.fsync(f.fileno())
 
       if heardEnter():
         break
 
+    print("Restoring best validation model")
+    f.write("Restoring best validation model\n")
+    saver.restore(session, tf.train.latest_checkpoint(save_path))
     test_perplexity = run_epoch(session, mtest)
     print("Test Perplexity: %.3f" % test_perplexity)
-
-    if FLAGS.save_path:
-      print("Saving model to %s." % FLAGS.save_path)
-      sv.saver.save(session, FLAGS.save_path, global_step=sv.global_step)
+    f.write("Test Perplexity: %.3f" % test_perplexity)
 
     return train_perplexity, valid_perplexity, test_perplexity
 
@@ -401,7 +420,7 @@ def config_generator(config, dict):
     attr_values = items[attr_id][1]
     for attr_value in attr_values:
       setattr(config,attr_name, attr_value)
-      if attr_id==(len(items)-1): # base case
+      if attr_id==(len(items)-1): # base case[
           yield config
       else:
         for i in _recursive_call(items, attr_id+1):
@@ -416,13 +435,16 @@ def config_generator(config, dict):
 if __name__ == "__main__":
   # tf.app.run()
 
-  with open("results.csv", "w") as f:
+  save_path = "savings"
+
+  with open(os.path.join(save_path,"results.csv"), "w") as f:
 
     dict = {
       "num_layers" : [1, 2],
       "hidden_size" : [200, 300, 600, 1000],
       "keep_prob" : [0.5, 0.8],
       "batch_size" : [20, 64],
+      "k": [5,10,50]
     }
     config = Config()
     f.write(",".join([str(attr[0]) for attr in vars(config).items()])) # csv header
@@ -430,9 +452,13 @@ if __name__ == "__main__":
     f.write("\n")
 
     for config in config_generator(config, dict):
-      tr, vl, ts = train(config)
+      name = "run_"+str(config.num_layers) + "_" + str(config.hidden_size) +  "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size) + "_" + str(config.k)
+      tr, vl, ts = train(config, os.path.join(save_path, name))
       f.write(",".join([str(attr[1]) for attr in vars(config).items()]))
       f.write(",%f,%f,%f" % (tr, vl, ts))
       f.write("\n")
+      f.flush()
+      os.fsync(f.fileno())
+
 
 

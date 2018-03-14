@@ -2,7 +2,7 @@ import tensorflow as tf
 
 eps = 1e-12
 
-def fun_activation(x, k=10, kernel=tf.abs, lambda_alphas = 0.):
+def fun_activation(x, k=10, kernel=tf.nn.relu, lambda_alphas = 0.):
 
     batch_size, size = tf.shape(x)[0], x.get_shape()[1].value
 
@@ -30,7 +30,7 @@ def fun_activation(x, k=10, kernel=tf.abs, lambda_alphas = 0.):
 
 class FunRNNCell(tf.contrib.rnn.RNNCell):
 
-    def __init__(self, num_units, k, lambda_alphas=0., kernel=tf.abs, is_training=True, reuse=None):
+    def __init__(self, num_units, k, lambda_alphas=0., kernel=tf.nn.relu, is_training=True, reuse=None):
         super(FunRNNCell, self).__init__(_reuse=reuse)
         self._num_units = num_units
         self.k = k
@@ -64,9 +64,8 @@ class FunRNNCell(tf.contrib.rnn.RNNCell):
 
             a1 = tf.matmul(new_input, w1) + b1
 
-
             # a1 = tf.contrib.layers.batch_norm(a1,center=True, scale=True, scope='bn', is_training=self.is_training)
-            a1 = tf.contrib.layers.batch_norm(a1,center=True, scale=True, scope='bn')
+            #a1 = tf.contrib.layers.batch_norm(a1,center=True, scale=True, scope='bn')
 
             with tf.variable_scope("state"):
                 state = fun_activation(a1, k=self.k, lambda_alphas=self.lambda_alphas, kernel=self.kernel)

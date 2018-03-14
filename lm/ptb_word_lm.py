@@ -63,11 +63,28 @@ import time
 
 import numpy as np
 import tensorflow as tf
-
+import select
+import sys
 import reader
 import util
 
 from tensorflow.python.client import device_lib
+
+def heardEnter():
+
+    ''' Listen for the user pressing ENTER '''
+
+    i,o,e = select.select([sys.stdin],[],[],0.0001)
+
+    for s in i:
+
+        if s == sys.stdin:
+            input = sys.stdin.readline()
+            return True
+
+    return False
+
+data_path = "data/simple-examples/data/"
 
 flags = tf.flags
 logging = tf.logging
@@ -151,18 +168,23 @@ class PTBModel(object):
     if not is_training:
       return
 
-    self._lr = tf.Variable(0.0, trainable=False)
+    self._lr = tf.Variable(config.learning_rate, trainable=False)
     tvars = tf.trainable_variables()
     grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
                                       config.max_grad_norm)
     optimizer = tf.train.GradientDescentOptimizer(self._lr)
-    self._train_op = optimizer.apply_gradients(
+    self._train_op_gd = optimizer.apply_gradients(
         zip(grads, tvars),
         global_step=tf.train.get_or_create_global_step())
+
 
     self._new_lr = tf.placeholder(
         tf.float32, shape=[], name="new_learning_rate")
     self._lr_update = tf.assign(self._lr, self._new_lr)
+
+
+    self._train_op_adam = tf.train.AdamOptimizer(0.001).minimize(self._cost)
+
 
 
   def _build_rnn_graph_lstm(self, inputs, config, is_training):
@@ -255,6 +277,20 @@ class PTBModel(object):
   def train_op(self):
     return self._train_op
 
+class Config(object):
+  def __init__(self):
+    self.init_scale = 0.05
+    self.learning_rate = 0.001
+    self.max_grad_norm = 10
+    self.num_layers = 2
+    self.num_steps = 35
+    self.hidden_size = 300
+    self.max_epoch = 6
+    self.max_max_epoch = 50
+    self.keep_prob = 0.5
+    self.lr_decay = 1.
+    self.batch_size = 64
+    self.vocab_size = 10000
 
 class SmallConfig(object):
   """Small config."""
@@ -376,87 +412,102 @@ def get_config():
   return config
 
 
-def main(_):
+def train(config):
+
+  tf.reset_default_graph()
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to PTB data directory")
-  gpus = [
-      x.name for x in device_lib.list_local_devices() if x.device_type == "GPU"
-  ]
-  if FLAGS.num_gpus > len(gpus):
-    raise ValueError(
-        "Your machine has only %d gpus "
-        "which is less than the requested --num_gpus=%d."
-        % (len(gpus), FLAGS.num_gpus))
 
   raw_data = reader.ptb_raw_data(FLAGS.data_path)
   train_data, valid_data, test_data, _ = raw_data
 
-  config = get_config()
-  eval_config = get_config()
-  eval_config.batch_size = 1
-  eval_config.num_steps = 1
 
-  with tf.Graph().as_default():
-    initializer = tf.random_uniform_initializer(-config.init_scale,
-                                                config.init_scale)
+  initializer = tf.random_uniform_initializer(-config.init_scale,
+                                              config.init_scale)
 
-    with tf.name_scope("Train"):
-      train_input = PTBInput(config=config, data=train_data, name="TrainInput")
-      with tf.variable_scope("Model", reuse=None, initializer=initializer):
-        m = PTBModel(is_training=True, config=config, input_=train_input)
-      tf.summary.scalar("Training Loss", m.cost)
-      tf.summary.scalar("Learning Rate", m.lr)
+  with tf.name_scope("Train"):
+    train_input = PTBInput(config=config, data=train_data, name="TrainInput")
+    with tf.variable_scope("Model", reuse=None, initializer=initializer):
+      m = PTBModel(is_training=True, config=config, input_=train_input)
+    tf.summary.scalar("Training Loss", m.cost)
+    tf.summary.scalar("Learning Rate", m.lr)
 
-    with tf.name_scope("Valid"):
-      valid_input = PTBInput(config=config, data=valid_data, name="ValidInput")
-      with tf.variable_scope("Model", reuse=True, initializer=initializer):
-        mvalid = PTBModel(is_training=False, config=config, input_=valid_input)
-      tf.summary.scalar("Validation Loss", mvalid.cost)
+  with tf.name_scope("Valid"):
+    valid_input = PTBInput(config=config, data=valid_data, name="ValidInput")
+    with tf.variable_scope("Model", reuse=True, initializer=initializer):
+      mvalid = PTBModel(is_training=False, config=config, input_=valid_input)
+    tf.summary.scalar("Validation Loss", mvalid.cost)
 
-    with tf.name_scope("Test"):
-      test_input = PTBInput(
-          config=eval_config, data=test_data, name="TestInput")
-      with tf.variable_scope("Model", reuse=True, initializer=initializer):
-        mtest = PTBModel(is_training=False, config=eval_config,
-                         input_=test_input)
+  with tf.name_scope("Test"):
+    test_input = PTBInput(
+        config=config, data=test_data, name="TestInput")
+    with tf.variable_scope("Model", reuse=True, initializer=initializer):
+      mtest = PTBModel(is_training=False, config=config,
+                       input_=test_input)
 
-    models = {"Train": m, "Valid": mvalid, "Test": mtest}
-    for name, model in models.items():
-      model.export_ops(name)
-    metagraph = tf.train.export_meta_graph()
-    if tf.__version__ < "1.1.0" and FLAGS.num_gpus > 1:
-      raise ValueError("num_gpus > 1 is not supported for TensorFlow versions "
-                       "below 1.1.0")
-    soft_placement = False
-    if FLAGS.num_gpus > 1:
-      soft_placement = True
-      util.auto_parallel(metagraph, m)
 
-  with tf.Graph().as_default():
-    tf.train.import_meta_graph(metagraph)
-    for model in models.values():
-      model.import_ops()
-    sv = tf.train.Supervisor(logdir=FLAGS.save_path)
-    config_proto = tf.ConfigProto(allow_soft_placement=soft_placement)
-    with sv.managed_session(config=config_proto) as session:
-      for i in range(config.max_max_epoch):
-        lr_decay = config.lr_decay ** max(i + 1 - config.max_epoch, 0.0)
-        m.assign_lr(session, config.learning_rate * lr_decay)
+  with tf.train.MonitoredSession() as session:
+    for i in range(config.max_max_epoch):
 
-        print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
-        train_perplexity = run_epoch(session, m, eval_op=m.train_op,
-                                     verbose=True)
-        print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
-        valid_perplexity = run_epoch(session, mvalid)
-        print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+      # lr_decay = config.lr_decay ** max(i + 1 - config.max_epoch, 0.0)
+      # m.assign_lr(session, config.learning_rate * config.lr_decay)
 
-      test_perplexity = run_epoch(session, mtest)
-      print("Test Perplexity: %.3f" % test_perplexity)
+      t_op  = m._train_op_adam #if i < 25 else m._train_op_gd
 
-      if FLAGS.save_path:
-        print("Saving model to %s." % FLAGS.save_path)
-        sv.saver.save(session, FLAGS.save_path, global_step=sv.global_step)
+      print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
+      train_perplexity = run_epoch(session, m, eval_op=t_op,
+                                   verbose=True)
+      print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
+      valid_perplexity = run_epoch(session, mvalid)
+      print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+
+      if heardEnter():
+        break
+
+    test_perplexity = run_epoch(session, mtest)
+    print("Test Perplexity: %.3f" % test_perplexity)
+
+
+
+    return train_perplexity, valid_perplexity, test_perplexity
+
+def config_generator(config, dict):
+
+  def _recursive_call(items, attr_id):
+    attr_name = items[attr_id][0]
+    attr_values = items[attr_id][1]
+    for attr_value in attr_values:
+      setattr(config,attr_name, attr_value)
+      if attr_id==(len(items)-1): # base case
+          yield config
+      else:
+        for i in _recursive_call(items, attr_id+1):
+          yield i
+
+
+  items = dict.items()
+  for i in _recursive_call(items, 0):
+    yield i
 
 
 if __name__ == "__main__":
-  tf.app.run()
+  # tf.app.run()
+
+  with open("results.csv", "w") as f:
+
+    dict = {
+      "num_layers" : [1, 2],
+      "hidden_size" : [200, 300, 600, 1000],
+      "keep_prob" : [0.5, 0.8],
+      "batch_size" : [20, 64],
+    }
+    config = Config()
+    f.write(",".join([str(attr[0]) for attr in vars(config).items()])) # csv header
+    f.write(",train_acc,valid_acc,test_acc")
+    f.write("\n")
+
+    for config in config_generator(config, dict):
+      tr, vl, ts = train(config)
+      f.write(",".join([str(attr[1]) for attr in vars(config).items()]))
+      f.write(",%f,%f,%f" % (tr, vl, ts))
+      f.write("\n")

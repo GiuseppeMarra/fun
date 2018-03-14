@@ -444,7 +444,6 @@ def config_generator(config, dict):
 
 
 if __name__ == "__main__":
-  # tf.app.run()
 
   save_path = "savings"
 
@@ -469,6 +468,8 @@ if __name__ == "__main__":
       f.write("\n")
       f.flush()
       os.fsync(f.fileno())
+
+
 
 
 

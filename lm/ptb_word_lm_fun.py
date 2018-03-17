@@ -288,18 +288,18 @@ class Config(object):
     self.init_scale = 0.05
     self.learning_rate = 0.001
     self.max_grad_norm = 10
-    self.num_layers = 2
+    self.num_layers = 1
     self.num_steps = 35
-    self.hidden_size = 300
+    self.hidden_size = 1000
     self.max_epoch = 6
     self.max_max_epoch = 30
-    self.keep_prob = 0.5
+    self.keep_prob = 0.35
     self.lr_decay = 1.
     self.batch_size = 64
     self.vocab_size = 10000
 
     self.k = 10
-    self.lambda_alphas = 0.
+    self.lambda_alphas = 1e-4
 
 
 def run_epoch(session, model, eval_op=None, verbose=False):
@@ -450,10 +450,8 @@ if __name__ == "__main__":
   with open(os.path.join(save_path,"results.csv"), "w") as f:
 
     dict = {
-      "num_layers" : [1, 2],
-      "hidden_size" : [200, 600, 1000],
-      "keep_prob" : [0.35, 0.5, 0.8],
-      "k": [5,10,50]
+      "k": [3, 5, 7, 10, 20, 30],
+      "lambda_alphas": [1e-4, 1e-3, 1e-2]
     }
     config = Config()
     f.write(",".join([str(attr[0]) for attr in vars(config).items()])) # csv header
@@ -461,7 +459,7 @@ if __name__ == "__main__":
     f.write("\n")
 
     for config in config_generator(config, dict):
-      name = "run_"+str(config.num_layers) + "_" + str(config.hidden_size) +  "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size) + "_" + str(config.k)
+      name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size) + "_" + str(config.k) + "_" + str(config.lambda_alphas)
       tr, vl, ts = train(config, os.path.join(save_path, name))
       f.write(",".join([str(attr[1]) for attr in vars(config).items()]))
       f.write(",%f,%f,%f" % (tr, vl, ts))

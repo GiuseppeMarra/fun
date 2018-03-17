@@ -65,6 +65,7 @@ import numpy as np
 import tensorflow as tf
 import select
 import sys
+import os
 import reader
 import util
 
@@ -356,6 +357,24 @@ class TestConfig(object):
   vocab_size = 10000
 
 
+class Config(object):
+  def __init__(self):
+    self.init_scale = 0.05
+    self.learning_rate = 0.001
+    self.max_grad_norm = 10
+    self.num_layers = 2
+    self.num_steps = 35
+    self.hidden_size = 300
+    self.max_epoch = 6
+    self.max_max_epoch = 30
+    self.keep_prob = 0.5
+    self.lr_decay = 1.
+    self.batch_size = 64
+    self.vocab_size = 10000
+
+    self.lambda_alphas = 0.
+
+
 def run_epoch(session, model, eval_op=None, verbose=False):
   """Runs the model on the given data."""
   start_time = time.time()
@@ -372,9 +391,8 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 
   for step in range(model.input.epoch_size):
     feed_dict = {}
-    for i, (c, h) in enumerate(model.initial_state):
-      feed_dict[c] = state[i].c
-      feed_dict[h] = state[i].h
+    for i, st in enumerate(model.initial_state):
+      feed_dict[st] = state[i]
 
     vals = session.run(fetches, feed_dict)
     cost = vals["cost"]
@@ -392,28 +410,9 @@ def run_epoch(session, model, eval_op=None, verbose=False):
   return np.exp(costs / iters)
 
 
-def get_config():
-  """Get model config."""
-  config = None
-  if FLAGS.model == "small":
-    config = SmallConfig()
-  elif FLAGS.model == "medium":
-    config = MediumConfig()
-  elif FLAGS.model == "large":
-    config = LargeConfig()
-  elif FLAGS.model == "test":
-    config = TestConfig()
-  else:
-    raise ValueError("Invalid model: %s", FLAGS.model)
-  if FLAGS.rnn_mode:
-    config.rnn_mode = FLAGS.rnn_mode
-  if FLAGS.num_gpus != 1 or tf.__version__ < "1.3.0" :
-    config.rnn_mode = BASIC
-  return config
 
-
-def train(config):
-
+def train(config, save_path):
+  os.mkdir(save_path)
   tf.reset_default_graph()
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to PTB data directory")
@@ -446,7 +445,15 @@ def train(config):
                        input_=test_input)
 
 
-  with tf.train.MonitoredSession() as session:
+  min_val_perplexity = None
+  saver = tf.train.Saver()
+  f = open(os.path.join(save_path, "log.txt"), "w")
+
+  coord = tf.train.Coordinator()
+  with tf.Session() as session:
+    session.run(tf.global_variables_initializer())
+    tf.train.start_queue_runners(sess=session, coord=coord)
+
     for i in range(config.max_max_epoch):
 
       # lr_decay = config.lr_decay ** max(i + 1 - config.max_epoch, 0.0)
@@ -455,20 +462,39 @@ def train(config):
       t_op  = m._train_op_adam #if i < 25 else m._train_op_gd
 
       print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
+      f.write("Epoch: %d Learning rate: %.3f \n" % (i + 1, session.run(m.lr)))
       train_perplexity = run_epoch(session, m, eval_op=t_op,
                                    verbose=True)
       print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
+      f.write("Epoch: %d Train Perplexity: %.3f \n" % (i + 1, train_perplexity))
       valid_perplexity = run_epoch(session, mvalid)
+      if min_val_perplexity is None:
+        min_val_perplexity = valid_perplexity
+        saver.save(session, save_path=os.path.join(save_path, "model.ckpt"))
+
+      if valid_perplexity <min_val_perplexity:
+        min_val_perplexity = valid_perplexity
+        saver.save(session, save_path=os.path.join(save_path, "model.ckpt"))
+        print("Saving best validation model")
+        f.write("Saving best validation model\n")
+
       print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+      f.write("Epoch: %d Valid Perplexity: %.3f \n" % (i + 1, valid_perplexity))
+      f.flush()
+      os.fsync(f.fileno())
 
       if heardEnter():
         break
 
+    print("Restoring best validation model")
+    f.write("Restoring best validation model\n")
+    saver.restore(session, tf.train.latest_checkpoint(save_path))
     test_perplexity = run_epoch(session, mtest)
     print("Test Perplexity: %.3f" % test_perplexity)
+    f.write("Test Perplexity: %.3f" % test_perplexity)
 
-
-
+    coord.request_stop()
+    coord.join()
     return train_perplexity, valid_perplexity, test_perplexity
 
 def config_generator(config, dict):
@@ -478,7 +504,7 @@ def config_generator(config, dict):
     attr_values = items[attr_id][1]
     for attr_value in attr_values:
       setattr(config,attr_name, attr_value)
-      if attr_id==(len(items)-1): # base case
+      if attr_id==(len(items)-1): # base case[
           yield config
       else:
         for i in _recursive_call(items, attr_id+1):
@@ -491,15 +517,15 @@ def config_generator(config, dict):
 
 
 if __name__ == "__main__":
-  # tf.app.run()
 
-  with open("results.csv", "w") as f:
+  save_path = "savings"
+
+  with open(os.path.join(save_path,"results.csv"), "w") as f:
 
     dict = {
       "num_layers" : [1, 2],
-      "hidden_size" : [200, 300, 600, 1000],
-      "keep_prob" : [0.5, 0.8],
-      "batch_size" : [20, 64],
+      "hidden_size" : [200, 600, 1000],
+      "keep_prob" : [0.35, 0.5, 0.8]
     }
     config = Config()
     f.write(",".join([str(attr[0]) for attr in vars(config).items()])) # csv header
@@ -507,7 +533,10 @@ if __name__ == "__main__":
     f.write("\n")
 
     for config in config_generator(config, dict):
-      tr, vl, ts = train(config)
+      name = "run_"+str(config.num_layers) + "_" + str(config.hidden_size) +  "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size)
+      tr, vl, ts = train(config, os.path.join(save_path, name))
       f.write(",".join([str(attr[1]) for attr in vars(config).items()]))
       f.write(",%f,%f,%f" % (tr, vl, ts))
       f.write("\n")
+      f.flush()
+      os.fsync(f.fileno())

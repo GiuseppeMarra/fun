@@ -184,15 +184,20 @@ class PTBModel(object):
 
     self._lr = tf.Variable(config.learning_rate, trainable=False)
 
-    # tvars = tf.trainable_variables()
-    # grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
-    #                                   config.max_grad_norm)
+    tvars = tf.trainable_variables()
+    grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
+                                      config.max_grad_norm)
+    optimizer = tf.train.AdamOptimizer(0.001)
+    self._train_op_adam = optimizer.apply_gradients(
+        zip(grads, tvars),
+        global_step=tf.train.get_or_create_global_step())
+
     # optimizer = tf.train.GradientDescentOptimizer(self._lr)
     # self._train_op_gd = optimizer.apply_gradients(
     #     zip(grads, tvars),
     #     global_step=tf.train.get_or_create_global_step())
 
-    self._train_op_adam = tf.train.AdamOptimizer(0.001).minimize(self._cost)
+    # self._train_op_adam = tf.train.AdamOptimizer(0.001).minimize(self._cost)
 
     self._new_lr = tf.placeholder(
         tf.float32, shape=[], name="new_learning_rate")
@@ -294,14 +299,14 @@ class PTBModel(object):
 
 class Config(object):
   def __init__(self):
-    self.init_scale = 0.05
+    self.init_scale = 0.03
     self.learning_rate = 0.001
-    self.max_grad_norm = 10
+    self.max_grad_norm = 50
     self.num_layers = 1
     self.num_steps = 35
     self.hidden_size = 1000
     self.max_epoch = 6
-    self.max_max_epoch = 100
+    self.max_max_epoch = 50
     self.keep_prob = 1.
     self.lr_decay = 1.
     self.batch_size = 128

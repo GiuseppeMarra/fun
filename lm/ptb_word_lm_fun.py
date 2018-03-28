@@ -161,6 +161,11 @@ class PTBModel(object):
 
     logits = tf.reshape(logits, [self.batch_size, self.num_steps, vocab_size])
 
+    '''Regularization terms'''
+
+    tf.add_to_collection("weights_regularization",
+                         config.lambda_weights_r * tf.reduce_sum(tf.square(softmax_w)))
+
     # Use the contrib sequence loss and average over the batches
     loss = tf.contrib.seq2seq.sequence_loss(
         logits,
@@ -170,20 +175,22 @@ class PTBModel(object):
         average_across_batch=True)
 
     # Update the cost
-    self._cost = tf.reduce_sum(loss) + tf.add_n(tf.get_collection("losses"))
+    self._cost = tf.reduce_sum(loss) + tf.add_n(tf.get_collection("alphas_regularization")) \
+                 + tf.add_n(tf.get_collection("weights_regularization"))
     self._final_state = state
 
     if not is_training:
       return
 
     self._lr = tf.Variable(config.learning_rate, trainable=False)
-    tvars = tf.trainable_variables()
-    grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
-                                      config.max_grad_norm)
-    optimizer = tf.train.GradientDescentOptimizer(self._lr)
-    self._train_op_gd = optimizer.apply_gradients(
-        zip(grads, tvars),
-        global_step=tf.train.get_or_create_global_step())
+
+    # tvars = tf.trainable_variables()
+    # grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
+    #                                   config.max_grad_norm)
+    # optimizer = tf.train.GradientDescentOptimizer(self._lr)
+    # self._train_op_gd = optimizer.apply_gradients(
+    #     zip(grads, tvars),
+    #     global_step=tf.train.get_or_create_global_step())
 
     self._train_op_adam = tf.train.AdamOptimizer(0.001).minimize(self._cost)
 
@@ -199,7 +206,9 @@ class PTBModel(object):
     # different than reported in the paper.
     def make_cell():
       cell = FunRNNCell(
-          num_units = config.hidden_size, k = config.k,  lambda_alphas = config.lambda_alphas, is_training = is_training,
+          num_units=config.hidden_size, k=config.k, lambda_alphas_r=config.lambda_alphas_r,
+          lambda_weights_r=config.lambda_weights_r,
+          is_training=is_training,
           reuse=not is_training)
       if is_training and config.keep_prob < 1:
         cell = tf.contrib.rnn.DropoutWrapper(
@@ -292,14 +301,16 @@ class Config(object):
     self.num_steps = 35
     self.hidden_size = 1000
     self.max_epoch = 6
-    self.max_max_epoch = 30
-    self.keep_prob = 0.35
+    self.max_max_epoch = 100
+    self.keep_prob = 1.
     self.lr_decay = 1.
-    self.batch_size = 64
+    self.batch_size = 128
     self.vocab_size = 10000
 
     self.k = 10
-    self.lambda_alphas = 1e-4
+    self.lambda_alphas_r = 0.
+    self.lambda_weights_r = 1e-4
+
 
 
 def run_epoch(session, model, eval_op=None, verbose=False):
@@ -399,7 +410,7 @@ def train(config, save_path):
         min_val_perplexity = valid_perplexity
         saver.save(session, save_path=os.path.join(save_path, "model.ckpt"))
 
-      if valid_perplexity <min_val_perplexity:
+      if valid_perplexity < min_val_perplexity:
         min_val_perplexity = valid_perplexity
         saver.save(session, save_path=os.path.join(save_path, "model.ckpt"))
         print("Saving best validation model")
@@ -450,8 +461,9 @@ if __name__ == "__main__":
   with open(os.path.join(save_path,"results.csv"), "w") as f:
 
     dict = {
-      "k": [3, 5, 7, 10, 20, 30],
-      "lambda_alphas": [1e-4, 1e-3, 1e-2]
+      "k": [3, 5, 10, 20],
+      "hidden_size": [50, 100, 500, 750, 1000],
+      "lambda_weights_r": [1e-4, 0.01, 0.1, 1.]
     }
     config = Config()
     f.write(",".join([str(attr[0]) for attr in vars(config).items()])) # csv header
@@ -459,7 +471,9 @@ if __name__ == "__main__":
     f.write("\n")
 
     for config in config_generator(config, dict):
-      name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size) + "_" + str(config.k) + "_" + str(config.lambda_alphas)
+      # name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size) + "_" + str(config.k) + "_" + str(config.lambda_alphas_r)
+      # name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size) + "_" + str(config.k)
+      name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" + "_" + str(config.lambda_weights_r).replace(".", "") + "_" + str(config.k)
       tr, vl, ts = train(config, os.path.join(save_path, name))
       f.write(",".join([str(attr[1]) for attr in vars(config).items()]))
       f.write(",%f,%f,%f" % (tr, vl, ts))

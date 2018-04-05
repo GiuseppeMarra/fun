@@ -179,6 +179,9 @@ class PTBModel(object):
                  + tf.add_n(tf.get_collection("weights_regularization"))
     self._final_state = state
 
+    # self.centers = tf.get_collection("centers")[0]
+    # self.alphas = tf.get_collection("alphas")[0]
+
     if not is_training:
       return
 
@@ -220,9 +223,10 @@ class PTBModel(object):
             cell, output_keep_prob=config.keep_prob)
       return cell
 
-    cell = tf.contrib.rnn.MultiRNNCell(
+    self._cell = tf.contrib.rnn.MultiRNNCell(
         [make_cell() for _ in range(config.num_layers)], state_is_tuple=True)
 
+    cell = self._cell
     self._initial_state = cell.zero_state(config.batch_size, data_type())
     inputs = tf.unstack(inputs, num=self.num_steps, axis=1)
     outputs, state = tf.nn.static_rnn(cell, inputs,
@@ -301,7 +305,7 @@ class Config(object):
   def __init__(self):
     self.init_scale = 0.03
     self.learning_rate = 0.001
-    self.max_grad_norm = 50
+    self.max_grad_norm = 10
     self.num_layers = 1
     self.num_steps = 35
     self.hidden_size = 1000
@@ -313,7 +317,7 @@ class Config(object):
     self.vocab_size = 10000
 
     self.k = 10
-    self.lambda_alphas_r = 0.
+    self.lambda_alphas_r = 1e-4
     self.lambda_weights_r = 1e-4
 
 
@@ -328,6 +332,8 @@ def run_epoch(session, model, eval_op=None, verbose=False):
   fetches = {
       "cost": model.cost,
       "final_state": model.final_state,
+      "centers": model._cell._cells[0].fun.centers,
+      "alphas": model._cell._cells[0].fun.alphas
   }
   if eval_op is not None:
     fetches["eval_op"] = eval_op
@@ -340,6 +346,9 @@ def run_epoch(session, model, eval_op=None, verbose=False):
     vals = session.run(fetches, feed_dict)
     cost = vals["cost"]
     state = vals["final_state"]
+    centers = vals["centers"]
+    alphas = vals["alphas"]
+    # fun_usage_score = activation_metric(centers, alphas)
 
     costs += cost
     iters += model.input.num_steps
@@ -349,6 +358,9 @@ def run_epoch(session, model, eval_op=None, verbose=False):
             (step * 1.0 / model.input.epoch_size, np.exp(costs / iters),
              iters * model.input.batch_size * max(1, FLAGS.num_gpus) /
              (time.time() - start_time)))
+
+      # print("Fun activation score:") #todo fixme
+      # print(fun_usage_score)
 
   return np.exp(costs / iters)
 
@@ -440,6 +452,7 @@ def train(config, save_path):
     coord.join()
     return train_perplexity, valid_perplexity, test_perplexity
 
+
 def config_generator(config, dict):
 
   def _recursive_call(items, attr_id):
@@ -466,9 +479,10 @@ if __name__ == "__main__":
   with open(os.path.join(save_path,"results.csv"), "w") as f:
 
     dict = {
-      "k": [3, 5, 10, 20],
+      "k": [5, 10, 20],
       "hidden_size": [50, 100, 500, 750, 1000],
-      "lambda_weights_r": [1e-4, 0.01, 0.1, 1.]
+      "lambda_weights_r": [1e-4, 0.01, 0.1, 1.],
+      "lambda_alphas_r": [1e-4, 0.01, 0.1, 1.]
     }
     config = Config()
     f.write(",".join([str(attr[0]) for attr in vars(config).items()])) # csv header
@@ -478,7 +492,8 @@ if __name__ == "__main__":
     for config in config_generator(config, dict):
       # name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size) + "_" + str(config.k) + "_" + str(config.lambda_alphas_r)
       # name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" + str(config.keep_prob).replace(".", "") + "_" + str(config.batch_size) + "_" + str(config.k)
-      name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" + "_" + str(config.lambda_weights_r).replace(".", "") + "_" + str(config.k)
+      name = "run_" + str(config.num_layers) + "_" + str(config.hidden_size) + "_" +\
+             str(config.lambda_weights_r).replace(".", "") + "_" + str(config.lambda_alphas_r).replace(".", "") + "_" + str(config.k)
       tr, vl, ts = train(config, os.path.join(save_path, name))
       f.write(",".join([str(attr[1]) for attr in vars(config).items()]))
       f.write(",%f,%f,%f" % (tr, vl, ts))
